@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Event Digital Map</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Chosen Palette: Neutral Gray & Vibrant Blue -->
+    <!-- Application Structure Plan: A single-page application designed as an interactive floor plan for an event. The main view is a grid representing vendor booths, now positioned using explicit row/column coordinates for custom layouts. Clicking a booth opens a modal with detailed information. A canvas layer is overlaid for real-time navigation guidance using actual GPS data by calibrating map corners to real-world latitude/longitude coordinates. This provides a true indoor/local navigation experience. -->
+    <!-- Visualization & Content Choices: 1. Floor Plan (HTML/Tailwind Grid with explicit placement): Goal=Organize. Represents a custom event space. Interaction=Click on booth. 2. Booth Details (Modal Popup): Goal=Inform. Shows vendor video, description, links. 3. In-Event Navigation (Geolocation API & Canvas with GPS Calibration): Goal=Relationships/Change. Shows user's live position on the map by converting real GPS coordinates to map pixel coordinates. Interaction=Click "Navigate" button. Justification=Provides a true "you are here" experience, making navigation intuitive and practical for attendees. -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    <style>
+        body {
+            font-family: 'Kanit', sans-serif;
+        }
+        .booth {
+            transition: all 0.2s ease-in-out;
+        }
+        .booth:hover {
+            transform: scale(1.05);
+            z-index: 10;
+            background-color: #93c5fd; /* blue-300 */
+        }
+        #user-location-dot {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            background-color: #3b82f6;
+            border-radius: 50%;
+            border: 3px solid white;
+            box-shadow: 0 0 10px #3b82f6;
+            transform: translate(-50%, -50%);
+            display: none;
+            animation: pulse 2s infinite;
+            z-index: 20;
+            transition: left 0.5s linear, top 0.5s linear; /* Smooth movement */
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
+            70% { box-shadow: 0 0 0 15px rgba(59, 130, 246, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <div class="container mx-auto p-4 max-w-4xl">
+        <header class="text-center my-6">
+            <h1 class="text-4xl font-bold text-gray-800">แผนที่ดิจิทัลสำหรับงาน Event</h1>
+            <p class="text-lg text-gray-600 mt-2">คลิกที่ล็อคเพื่อดูข้อมูลร้านค้าและขอเส้นทาง</p>
+        </header>
+
+        <div id="map-container" class="relative bg-white p-4 rounded-lg shadow-lg">
+            <div id="map-grid" class="grid gap-2" style="grid-template-columns: repeat(6, 1fr); grid-template-rows: repeat(4, 1fr);">
+                <!-- Booths generated here -->
+            </div>
+            <canvas id="nav-canvas" class="absolute top-0 left-0 w-full h-full pointer-events-none z-10"></canvas>
+            <div id="user-location-dot"></div>
+        </div>
+        <p id="nav-disclaimer" class="text-center text-sm text-gray-500 mt-2 hidden">หมายเหตุ: เส้นทางที่แสดงเป็นเพียงทิศทางโดยตรง ไม่ใช่เส้นทางเดินจริง</p>
+    </div>
+
+    <div id="shop-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 hidden z-50">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div class="p-6">
+                <div class="flex justify-between items-start">
+                    <h2 id="modal-shop-name" class="text-3xl font-bold text-gray-800"></h2>
+                    <button onclick="hideModal()" class="text-gray-500 hover:text-gray-800 text-3xl">&times;</button>
+                </div>
+                <p id="modal-shop-description" class="text-gray-600 mt-2 mb-4"></p>
+                <div class="aspect-w-16 aspect-h-9 mb-4">
+                     <iframe id="modal-video" class="w-full h-full rounded" src="" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+                </div>
+                <div class="flex flex-col sm:flex-row gap-4">
+                    <a id="modal-gmap-link" href="#" target="_blank" class="flex-1 text-center bg-blue-600 text-white font-semibold py-3 px-4 rounded-lg hover:bg-blue-700 transition-colors">
+                        📍 นำทางไปร้านค้าจริง
+                    </a>
+                    <button id="modal-navigate-button" class="flex-1 text-center bg-green-600 text-white font-semibold py-3 px-4 rounded-lg hover:bg-green-700 transition-colors">
+                        🧭 นำทางในงาน
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+// --- CONFIGURATION: Map Calibration (IMPORTANT!) ---
+const mapCalibration = {
+    topLeft:     { lat: 13.74000, lon: 100.55829 }, 
+    bottomRight: { lat: 13.73550, lon: 100.56291 } 
+};
+
+// --- CONFIGURATION: Shop Data with Coordinates ---
+const shopData = [
+    { id: 'A1', name: 'ร้านกาแฟหอมกรุ่น', col: 1, row: 1, description: 'กาแฟสดใหม่จากเมล็ดอาราบิก้าแท้ 100%', videoUrl: 'https://www.youtube.com/embed/jfKfPfyJRdk', googleMapsUrl: 'https://maps.app.goo.gl/u5n9gZ1YqL8Xz7hR8' },
+    { id: 'A2', name: 'เบเกอรี่โฮมเมด', col: 2, row: 1, description: 'ขนมปังและเค้กอบใหม่ทุกวัน', videoUrl: 'https://www.youtube.com/embed/gWrf4a-d_xE', googleMapsUrl: 'https://maps.app.goo.gl/u5n9gZ1YqL8Xz7hR8' },
+    { id: 'A3', name: 'ร้านส้มตำแซ่บเวอร์', col: 3, row: 1, description: 'ส้มตำรสเด็ด พร้อมเมนูอาหารอีสานหลากหลาย', videoUrl: 'https://www.youtube.com/embed/jfKfPfyJRdk', googleMapsUrl: 'https://maps.app.goo.gl/u5n9gZ1YqL8Xz7hR8' },
+    { id: 'A4', name: 'เสื้อผ้าแฟชั่น', col: 6, row: 1, description: 'เสื้อผ้าสไตล์เกาหลี อัพเดทเทรนด์ใหม่ล่าสุด', videoUrl: 'https://www.youtube.com/embed/gWrf4a-d_xE', googleMapsUrl: 'https://maps.app.goo.gl/u5n9gZ1YqL8Xz7hR8' },
+    { id: 'B1', name: 'เครื่องประดับทำมือ', col: 1, row: 2, description: 'สร้อยคอและต่างหูดีไซน์เก๋ ไม่ซ้ำใคร', videoUrl: 'https://www.youtube.com/embed/jfKfPfyJRdk', googleMapsUrl: 'https://maps.app.goo.gl/u5n9gZ1YqL8Xz7hR8' },
+    { id: 'B2', name: 'สินค้าออร์แกนิก', col: 2, row: 2, description: 'ผักผลไม้และผลิตภัณฑ์เพื่อสุขภาพ', videoUrl: 'https://www.youtube.com/embed/gWrf4a-d_xE', googleMapsUrl: 'https://maps.app.goo.gl/u5n9gZ1YqL8Xz7hR8' },
+    { id: 'C1', name: 'ของเล่นเด็ก', col: 1, row: 3, description: 'ของเล่นเสริมพัฒนาการสำหรับทุกวัย', videoUrl: 'https://www.youtube.com/embed/jfKfPfyJRdk', googleMapsUrl: 'https://maps.app.goo.gl/u5n9gZ1YqL8Xz7hR8' },
+    { id: 'C2', name: 'แกลเลอรี่ภาพ', col: 6, row: 3, description: 'แสดงผลงานภาพถ่ายจากศิลปินท้องถิ่น', videoUrl: 'https://www.youtube.com/embed/gWrf4a-d_xE', googleMapsUrl: 'https://maps.app.goo.gl/u5n9gZ1YqL8Xz7hR8' },
+    { id: 'B3', name: 'ทางเข้า/ออก', col: 1, row: 4, description: 'ประตูทางเข้า-ออกหลักของงาน', type: 'utility' },
+    { id: 'C3', name: 'เวทีกลาง', col: 3, row: 4, colSpan: 2, description: 'เวทีกิจกรรมหลักและการแสดง', type: 'utility' },
+    { id: 'B4', name: 'จุดบริการ', col: 5, row: 4, description: 'จุดประชาสัมพันธ์และสอบถามข้อมูล', type: 'utility' },
+    { id: 'C4', name: 'ห้องน้ำ', col: 6, row: 4, description: 'ห้องน้ำสำหรับผู้เข้าร่วมงาน', type: 'utility' }
+];
+
+const mapGrid = document.getElementById('map-grid');
+const modal = document.getElementById('shop-modal');
+const userLocationDot = document.getElementById('user-location-dot');
+const navCanvas = document.getElementById('nav-canvas');
+const navDisclaimer = document.getElementById('nav-disclaimer');
+const ctx = navCanvas.getContext('2d');
+
+let currentUserPosition = null;
+let currentNavTarget = null;
+let watchId = null;
+
+function initMap() {
+    mapGrid.innerHTML = '';
+    shopData.forEach(shop => {
+        const booth = document.createElement('div');
+        booth.id = `booth-${shop.id}`;
+        booth.className = 'booth aspect-square flex items-center justify-center p-2 border-2 rounded-md cursor-pointer';
+        booth.style.gridColumnStart = shop.col;
+        booth.style.gridRowStart = shop.row;
+        if (shop.colSpan) booth.style.gridColumnEnd = `span ${shop.colSpan}`;
+        if (shop.rowSpan) booth.style.gridRowEnd = `span ${shop.rowSpan}`;
+        if (shop.type === 'utility') {
+            booth.classList.add('bg-yellow-200', 'border-yellow-400');
+        } else {
+            booth.classList.add('bg-gray-200', 'border-gray-400');
+        }
+        booth.innerHTML = `<span class="font-semibold text-gray-700 text-center text-sm md:text-base">${shop.id}<br>${shop.name.split(' ')[0]}</span>`;
+        if (shop.type !== 'utility') {
+            booth.addEventListener('click', () => showModal(shop));
+        }
+        mapGrid.appendChild(booth);
+    });
+}
+
+function showModal(shop) {
+    document.getElementById('modal-shop-name').textContent = shop.name;
+    document.getElementById('modal-shop-description').textContent = shop.description;
+    document.getElementById('modal-video').src = shop.videoUrl || '';
+    document.getElementById('modal-gmap-link').href = shop.googleMapsUrl || '#';
+    const navigateButton = document.getElementById('modal-navigate-button');
+    navigateButton.onclick = () => navigateToBooth(shop.id);
+    modal.classList.remove('hidden');
+}
+
+function hideModal() {
+    document.getElementById('modal-video').src = '';
+    modal.classList.add('hidden');
+}
+
+function stopNavigation() {
+    if (watchId) navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+    currentNavTarget = null;
+    userLocationDot.style.display = 'none';
+    clearNavigationLine();
+}
+
+function gpsToMapCoordinates(lat, lon) {
+    const mapRect = mapGrid.getBoundingClientRect();
+    if (!mapRect.width || !mapRect.height) return { x: 0, y: 0 };
+
+    const totalLatDiff = mapCalibration.topLeft.lat - mapCalibration.bottomRight.lat;
+    const totalLonDiff = mapCalibration.bottomRight.lon - mapCalibration.topLeft.lon;
+
+    if (totalLatDiff === 0 || totalLonDiff === 0) return { x: 0, y: 0 };
+
+    const userLatDiff = mapCalibration.topLeft.lat - lat;
+    const userLonDiff = lon - mapCalibration.topLeft.lon;
+
+    const yPercent = userLatDiff / totalLatDiff;
+    const xPercent = userLonDiff / totalLonDiff;
+
+    const x = mapRect.width * xPercent;
+    const y = mapRect.height * yPercent;
+    
+    return { x: x, y: y };
+}
+
+
+function navigateToBooth(boothId) {
+    hideModal();
+    stopNavigation();
+    currentNavTarget = boothId;
+    
+    if (navigator.geolocation) {
+        watchId = navigator.geolocation.watchPosition(
+            (position) => {
+                const { latitude, longitude } = position.coords;
+                currentUserPosition = gpsToMapCoordinates(latitude, longitude);
+                userLocationDot.style.display = 'block';
+                userLocationDot.style.left = `${currentUserPosition.x}px`;
+                userLocationDot.style.top = `${currentUserPosition.y}px`;
+                drawNavigationLine(currentNavTarget);
+            }, 
+            (error) => {
+                let errorMsg = 'ไม่สามารถเข้าถึงตำแหน่งได้: ';
+                switch(error.code) {
+                    case error.PERMISSION_DENIED:
+                        errorMsg += "คุณปฏิเสธการเข้าถึงตำแหน่ง";
+                        break;
+                    case error.POSITION_UNAVAILABLE:
+                        errorMsg += "ข้อมูลตำแหน่งไม่พร้อมใช้งาน";
+                        break;
+                    case error.TIMEOUT:
+                        errorMsg += "หมดเวลาในการร้องขอตำแหน่ง";
+                        break;
+                    default:
+                        errorMsg += "เกิดข้อผิดพลาดที่ไม่รู้จัก";
+                        break;
+                }
+                // Suggest running on a server for local files
+                if (window.location.protocol === 'file:') {
+                    errorMsg += '\n\nหมายเหตุ: การระบุตำแหน่งมักจะถูกบล็อกเมื่อเปิดไฟล์จากในเครื่องโดยตรง (file://) กรุณาลองอัปโหลดไฟล์นี้ขึ้นเว็บเซิร์ฟเวอร์ (HTTPS) เพื่อทดสอบ';
+                }
+                alert(errorMsg);
+                stopNavigation();
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+    } else {
+        alert('เบราว์เซอร์ของคุณไม่รองรับการระบุตำแหน่ง');
+    }
+}
+
+function drawNavigationLine(boothId) {
+    if (!currentUserPosition || !boothId) return;
+    const targetBooth = document.getElementById(`booth-${boothId}`);
+    if (!targetBooth) return;
+
+    const targetX = targetBooth.offsetLeft + targetBooth.offsetWidth / 2;
+    const targetY = targetBooth.offsetTop + targetBooth.offsetHeight / 2;
+
+    navCanvas.width = mapGrid.offsetWidth;
+    navCanvas.height = mapGrid.offsetHeight;
+
+    ctx.clearRect(0, 0, navCanvas.width, navCanvas.height);
+    
+    ctx.beginPath();
+    ctx.moveTo(currentUserPosition.x, currentUserPosition.y);
+    ctx.lineTo(targetX, targetY);
+    ctx.strokeStyle = '#3b82f6';
+    ctx.lineWidth = 4;
+    ctx.setLineDash([5, 5]);
+    ctx.stroke();
+
+    ctx.fillStyle = '#16a34a';
+    ctx.beginPath();
+    ctx.arc(targetX, targetY, 10, 0, 2 * Math.PI);
+    ctx.fill();
+
+    navDisclaimer.classList.remove('hidden');
+}
+
+function clearNavigationLine() {
+    ctx.clearRect(0, 0, navCanvas.width, navCanvas.height);
+    navDisclaimer.classList.add('hidden');
+}
+
+window.onload = initMap;
+window.onresize = () => {
+    if (currentNavTarget) {
+        drawNavigationLine(currentNavTarget);
+    }
+};
+
+</script>
+
+</body>
+</html>
+
